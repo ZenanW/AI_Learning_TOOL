@@ -112,6 +112,7 @@ export default function LearningGraph({ onNodeSelect }: LearningGraphProps) {
             label: n.label,
             description: n.description,
             status: i === 0 ? "explored" : "new",
+            expanded: i === 0,
           },
         }));
 

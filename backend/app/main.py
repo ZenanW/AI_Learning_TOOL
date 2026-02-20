@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 
 from app.routes.expand import router as expand_router
 from app.routes.generate_path import router as generate_path_router
+from app.routes.generate_content import router as generate_content_router
 
 load_dotenv()
 
@@ -19,6 +20,7 @@ app.add_middleware(
 
 app.include_router(expand_router, prefix="/api")
 app.include_router(generate_path_router, prefix="/api")
+app.include_router(generate_content_router, prefix="/api")
 
 
 @app.get("/health")
