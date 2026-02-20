@@ -18,25 +18,60 @@ import PromptNode from "./PromptNode";
 
 const API_BASE = "http://localhost:8000";
 const PROMPT_NODE_ID = "prompt";
-const CHILD_Y_OFFSET = 120;
+const NODE_Y_SPACING = 140;
+const NODE_X_OFFSET = 250;
 
-/** Call the backend to get the next subtopic for a given topic. */
-async function fetchSubtopic(topic: string): Promise<string> {
+/* ── API helpers ── */
+
+interface PathNode {
+  id: string;
+  label: string;
+  description: string;
+}
+
+interface PathEdge {
+  source: string;
+  target: string;
+}
+
+async function fetchLearningPath(
+  topic: string
+): Promise<{ nodes: PathNode[]; edges: PathEdge[] }> {
+  const res = await fetch(`${API_BASE}/api/generate-path`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topic }),
+  });
+
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+async function fetchSubtopic(
+  topic: string
+): Promise<{ subtopic: string; description: string }> {
   const res = await fetch(`${API_BASE}/api/expand`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ topic }),
   });
 
-  if (!res.ok) {
-    throw new Error(`API error: ${res.status}`);
-  }
-
-  const data = await res.json();
-  return data.subtopic;
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
 }
 
-export default function LearningGraph() {
+/* ── Props type for parent page ── */
+export interface SelectedNodeData {
+  label: string;
+  description: string;
+  status: string;
+}
+
+interface LearningGraphProps {
+  onNodeSelect?: (data: SelectedNodeData | null) => void;
+}
+
+export default function LearningGraph({ onNodeSelect }: LearningGraphProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([
     {
       id: PROMPT_NODE_ID,
@@ -47,35 +82,72 @@ export default function LearningGraph() {
   ]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
-  // Track which nodes are currently loading to prevent double-clicks
   const loadingRef = useRef<Set<string>>(new Set());
 
-  /* ── Step 1: submit a topic from the prompt ── */
+  /* ── Step 1: submit a topic → generate a full learning path ── */
   const handleTopicSubmit = useCallback(
-    (topic: string) => {
-      const rootId = `topic-${Date.now()}`;
+    async (topic: string) => {
+      // Replace prompt node with a loading indicator
+      setNodes([
+        {
+          id: "loading-root",
+          type: "custom",
+          position: { x: 0, y: 0 },
+          data: { label: topic, status: "loading", description: "" },
+        },
+      ]);
 
-      const rootNode: Node = {
-        id: rootId,
-        type: "custom",
-        position: { x: 0, y: 0 },
-        data: { label: topic, status: "new" },
-      };
+      try {
+        const path = await fetchLearningPath(topic);
 
-      setNodes((prev) =>
-        prev.map((n) => (n.id === PROMPT_NODE_ID ? rootNode : n))
-      );
+        // Convert API response into React Flow nodes + edges
+        const flowNodes: Node[] = path.nodes.map((n, i) => ({
+          id: n.id,
+          type: "custom",
+          position: {
+            x: i === 0 ? 0 : (i % 2 === 0 ? -1 : 1) * NODE_X_OFFSET,
+            y: i * NODE_Y_SPACING,
+          },
+          data: {
+            label: n.label,
+            description: n.description,
+            status: i === 0 ? "explored" : "new",
+          },
+        }));
+
+        const flowEdges: Edge[] = path.edges.map((e) => ({
+          id: `edge-${e.source}-${e.target}`,
+          source: e.source,
+          target: e.target,
+          style: { stroke: "#52525b" },
+        }));
+
+        setNodes(flowNodes);
+        setEdges(flowEdges);
+      } catch (err) {
+        console.error("Failed to generate learning path:", err);
+        setNodes([
+          {
+            id: "error-root",
+            type: "custom",
+            position: { x: 0, y: 0 },
+            data: {
+              label: topic,
+              status: "error",
+              description: "Failed to generate learning path. Please try again.",
+            },
+          },
+        ]);
+      }
     },
-    [setNodes]
+    [setNodes, setEdges]
   );
 
-  /* ── Step 2: expand a topic node via the AI backend ── */
+  /* ── Step 2: expand a node → get AI subtopic + description ── */
   const handleNodeExpand = useCallback(
     async (nodeId: string) => {
-      // Prevent concurrent expand on the same node
       if (loadingRef.current.has(nodeId)) return;
 
-      // Read current node state
       let parentLabel = "";
       let parentPos = { x: 0, y: 0 };
       let alreadyExpanded = false;
@@ -87,12 +159,11 @@ export default function LearningGraph() {
           parentPos = { ...parent.position };
           alreadyExpanded = !!parent.data.expanded;
         }
-        return prevNodes; // no mutation yet
+        return prevNodes;
       });
 
       if (!parentLabel || alreadyExpanded) return;
 
-      // Mark as loading
       loadingRef.current.add(nodeId);
       setNodes((prev) =>
         prev.map((n) =>
@@ -103,7 +174,7 @@ export default function LearningGraph() {
       );
 
       try {
-        const subtopic = await fetchSubtopic(parentLabel);
+        const { subtopic, description } = await fetchSubtopic(parentLabel);
 
         const uid = Date.now();
         const childId = `${nodeId}-child-${uid}`;
@@ -113,9 +184,9 @@ export default function LearningGraph() {
           type: "custom",
           position: {
             x: parentPos.x,
-            y: parentPos.y + CHILD_Y_OFFSET,
+            y: parentPos.y + NODE_Y_SPACING,
           },
-          data: { label: subtopic, status: "new" },
+          data: { label: subtopic, description, status: "new" },
         };
 
         const childEdge: Edge = {
@@ -136,7 +207,6 @@ export default function LearningGraph() {
 
         setEdges((prev) => [...prev, childEdge]);
       } catch {
-        // Revert on error
         setNodes((prev) =>
           prev.map((n) =>
             n.id === nodeId
@@ -150,6 +220,24 @@ export default function LearningGraph() {
     },
     [setNodes, setEdges]
   );
+
+  /* ── Handle node click → show details in side panel ── */
+  const handleNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      if (node.type === "prompt" || !onNodeSelect) return;
+      onNodeSelect({
+        label: node.data.label as string,
+        description: (node.data.description as string) || "",
+        status: node.data.status as string,
+      });
+    },
+    [onNodeSelect]
+  );
+
+  /* ── Handle pane click → deselect ── */
+  const handlePaneClick = useCallback(() => {
+    onNodeSelect?.(null);
+  }, [onNodeSelect]);
 
   /* ── Inject callbacks into node data ── */
   const nodesWithCallbacks = useMemo(
@@ -186,6 +274,8 @@ export default function LearningGraph() {
       edges={edges}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
+      onNodeClick={handleNodeClick}
+      onPaneClick={handlePaneClick}
       nodeTypes={nodeTypes}
       fitView
       panOnDrag

@@ -13,6 +13,7 @@ class ExpandRequest(BaseModel):
 
 class ExpandResponse(BaseModel):
     subtopic: str
+    description: str
 
 
 @router.post("/expand", response_model=ExpandResponse)
@@ -34,8 +35,12 @@ async def expand_topic(req: ExpandRequest):
                 "role": "system",
                 "content": (
                     "You are a learning assistant. Given a topic, respond with "
-                    "exactly one concise subtopic that a learner should study next. "
-                    "Reply with only the subtopic name, nothing else."
+                    "exactly one concise subtopic that a learner should study next, "
+                    "along with a 2-3 sentence description of what it covers and why "
+                    "it matters.\n\n"
+                    "Respond with ONLY valid JSON in this format:\n"
+                    '{"subtopic": "Topic Name", "description": "2-3 sentence explanation."}\n\n'
+                    "No markdown, no code fences, just raw JSON."
                 ),
             },
             {
@@ -43,11 +48,27 @@ async def expand_topic(req: ExpandRequest):
                 "content": f"What should I learn next after: {req.topic}",
             },
         ],
-        max_tokens=50,
+        max_tokens=200,
         temperature=0.7,
     )
 
-    subtopic = (completion.choices[0].message.content or "").strip()
+    raw = (completion.choices[0].message.content or "").strip()
+
+    # Strip markdown code fences if the model includes them
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+    if raw.endswith("```"):
+        raw = raw[: -3].rstrip()
+
+    try:
+        import json
+        data = json.loads(raw)
+        subtopic = data.get("subtopic", "").strip()
+        description = data.get("description", "").strip()
+    except (json.JSONDecodeError, AttributeError):
+        # Fallback: treat the whole response as a subtopic name
+        subtopic = raw
+        description = ""
 
     if not subtopic:
         raise HTTPException(
@@ -55,4 +76,4 @@ async def expand_topic(req: ExpandRequest):
             detail="AI returned an empty response",
         )
 
-    return ExpandResponse(subtopic=subtopic)
+    return ExpandResponse(subtopic=subtopic, description=description)
